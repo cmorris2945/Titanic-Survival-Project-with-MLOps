@@ -1,0 +1,9 @@
+Metadata-Version: 2.4
+Name: MLOPS-PROJECT-3
+Version: 0.1
+Author: Chris Morris
+Requires-Dist: pandas
+Requires-Dist: numpy
+Requires-Dist: setuptools
+Dynamic: author
+Dynamic: requires-dist

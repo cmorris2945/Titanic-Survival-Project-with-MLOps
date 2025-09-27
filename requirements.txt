@@ -1,0 +1,4 @@
+pandas
+numpy
+setuptools
+apache-airflow-providers-google==10.10.1
