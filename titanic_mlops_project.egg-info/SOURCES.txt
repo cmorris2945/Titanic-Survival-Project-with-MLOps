@@ -1,0 +1,15 @@
+README.md
+setup.py
+config/__init__.py
+config/database_config.py
+config/paths_config.py
+pipeline/__init__.py
+src/__init__.py
+src/custom_exception.py
+src/data_ingestion.py
+src/logger.py
+titanic_mlops_project.egg-info/PKG-INFO
+titanic_mlops_project.egg-info/SOURCES.txt
+titanic_mlops_project.egg-info/dependency_links.txt
+titanic_mlops_project.egg-info/requires.txt
+titanic_mlops_project.egg-info/top_level.txt

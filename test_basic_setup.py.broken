@@ -1,0 +1,125 @@
+﻿from airflow import DAG
+from airflow.operators.python import PythonOperator
+from airflow.providers.postgres.operators.postgres import PostgresOperator
+from datetime import datetime
+
+def test_python_imports():
+    """Test if all required packages are available"""
+    try:
+        import pandas as pd
+        from airflow.providers.google.cloud.hooks.gcs import GCSHook
+        from airflow.providers.postgres.hooks.postgres import PostgresHook
+        
+        print(" All imports successful!")
+        print(f" Pandas version: {pd.__version__}")
+        print(" GCS Hook available")
+        print(" Postgres Hook available")
+        
+        return "All packages available"
+    except Exception as e:
+        print(f" Import failed: {e}")
+        raise
+
+def test_postgres_connection():
+    """Test PostgreSQL connection"""
+    try:
+        from airflow.providers.postgres.hooks.postgres import PostgresHook
+        hook = PostgresHook(postgres_conn_id="postgres_default")
+        conn = hook.get_conn()
+        cursor = conn.cursor()
+        cursor.execute("SELECT version();")
+        result = cursor.fetchone()
+        print(f" PostgreSQL Connection successful!")
+        print(f" Version: {result[0][:50]}...")
+        cursor.close()
+        conn.close()
+        return "PostgreSQL connection successful"
+    except Exception as e:
+        print(f" PostgreSQL Connection failed: {e}")
+        raise
+
+def create_sample_titanic_data():
+    """Create sample Titanic data"""
+    import pandas as pd
+    
+    # Sample Titanic data
+    data = {
+        'PassengerId': [1, 2, 3, 4, 5],
+        'Survived': [0, 1, 1, 1, 0],
+        'Pclass': [3, 1, 3, 1, 3],
+        'Name': ['Braund, Mr. Owen Harris', 'Cumings, Mrs. John Bradley', 
+                'Heikkinen, Miss. Laina', 'Futrelle, Mrs. Jacques Heath', 
+                'Allen, Mr. William Henry'],
+        'Sex': ['male', 'female', 'female', 'female', 'male'],
+        'Age': [22.0, 38.0, 26.0, 35.0, 35.0],
+        'SibSp': [1, 1, 0, 1, 0],
+        'Parch': [0, 0, 0, 0, 0],
+        'Ticket': ['A/5 21171', 'PC 17599', 'STON/O2. 3101282', '113803', '373450'],
+        'Fare': [7.25, 71.2833, 7.925, 53.1, 8.05],
+        'Cabin': [None, 'C85', None, 'C123', None],
+        'Embarked': ['S', 'C', 'S', 'S', 'S']
+    }
+    
+    df = pd.DataFrame(data)
+    print(f" Created sample Titanic dataset with {len(df)} rows")
+    print(f" Columns: {list(df.columns)}")
+    print(f" Sample data:\n{df.head()}")
+    
+    return f"Created {len(df)} sample records"
+
+with DAG(
+    'test_basic_setup',
+    schedule_interval=None,
+    start_date=datetime(2024, 1, 1),
+    catchup=False,
+    tags=['test']
+) as dag:
+    
+    test_imports = PythonOperator(
+        task_id='test_imports',
+        python_callable=test_python_imports
+    )
+    
+    test_postgres = PythonOperator(
+        task_id='test_postgres',
+        python_callable=test_postgres_connection
+    )
+    
+    create_sample_data = PythonOperator(
+        task_id='create_sample_data',
+        python_callable=create_sample_titanic_data
+    )
+    
+    create_test_table = PostgresOperator(
+        task_id='create_test_table',
+        postgres_conn_id='postgres_default',
+        sql="""
+        CREATE TABLE IF NOT EXISTS titanic_test (
+            passenger_id INTEGER PRIMARY KEY,
+            survived INTEGER,
+            pclass INTEGER,
+            name VARCHAR(255),
+            sex VARCHAR(10),
+            age FLOAT,
+            sibsp INTEGER,
+            parch INTEGER,
+            ticket VARCHAR(50),
+            fare FLOAT,
+            cabin VARCHAR(50),
+            embarked VARCHAR(5),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        
+        -- Insert sample data
+        INSERT INTO titanic_test (passenger_id, survived, pclass, name, sex, age, sibsp, parch, ticket, fare, cabin, embarked) 
+        VALUES 
+            (1, 0, 3, 'Braund, Mr. Owen Harris', 'male', 22.0, 1, 0, 'A/5 21171', 7.25, NULL, 'S'),
+            (2, 1, 1, 'Cumings, Mrs. John Bradley', 'female', 38.0, 1, 0, 'PC 17599', 71.2833, 'C85', 'C')
+        ON CONFLICT (passenger_id) DO NOTHING;
+        
+        -- Show results
+        SELECT COUNT(*) as total_records FROM titanic_test;
+        """
+    )
+    
+    test_imports >> test_postgres >> create_sample_data >> create_test_table

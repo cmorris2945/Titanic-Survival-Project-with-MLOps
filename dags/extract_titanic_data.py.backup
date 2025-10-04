@@ -1,0 +1,143 @@
+from airflow import DAG
+from airflow.providers.google.cloud.transfers.gcs_to_local import GCSToLocalFilesystemOperator
+from airflow.providers.google.cloud.operators.gcs import GCSListObjectsOperator
+from airflow.operators.python import PythonOperator
+from airflow.hooks.base import BaseHook
+from airflow.providers.google.cloud.hooks.gcs import GCSHook
+from datetime import datetime
+import pandas as pd
+import sqlalchemy
+import os
+
+def validate_bucket_access(**context):
+    """Validate access to the GCS bucket and file"""
+    try:
+        hook = GCSHook(gcp_conn_id="google")
+        
+        # Check if bucket exists and is accessible
+        bucket_exists = hook.exists("my-bucket-2945")
+        print(f"✅ Bucket 'my-bucket-2945' exists: {bucket_exists}")
+        
+        # Check if the specific file exists
+        file_exists = hook.exists("my-bucket-2945", "Titanic-Dataset.csv")
+        print(f"✅ File 'Titanic-Dataset.csv' exists: {file_exists}")
+        
+        # Get file metadata
+        if file_exists:
+            blob = hook.get_blob("my-bucket-2945", "Titanic-Dataset.csv")
+            print(f"📊 File size: {blob.size} bytes")
+            print(f"📅 Created: {blob.time_created}")
+            print(f"🔄 Updated: {blob.updated}")
+        
+        return {"bucket_accessible": bucket_exists, "file_exists": file_exists}
+        
+    except Exception as e:
+        print(f"❌ Bucket validation failed: {str(e)}")
+        raise
+
+def process_file_list(**context):
+    """Process the list of files returned by GCSListObjectsOperator"""
+    # Get the file list from the previous task
+    file_list = context['task_instance'].xcom_pull(task_ids='list_files')
+    
+    print(f"📁 Found {len(file_list)} files in bucket:")
+    for file_name in file_list:
+        print(f"  - {file_name}")
+    
+    # Verify our target file is in the list
+    target_file = "Titanic-Dataset.csv"
+    if target_file in file_list:
+        print(f"✅ Target file '{target_file}' found in bucket")
+        return target_file
+    else:
+        print(f"❌ Target file '{target_file}' not found in bucket")
+        raise FileNotFoundError(f"File {target_file} not found in bucket")
+
+def load_to_sql(file_path, **context):
+    """Load CSV data to PostgreSQL database"""
+    try:
+        # Verify file exists locally first
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"Downloaded file not found at {file_path}")
+        
+        print(f"📂 File size: {os.path.getsize(file_path)} bytes")
+        
+        # Get PostgreSQL connection
+        conn = BaseHook.get_connection('postgres_default')
+        
+        # Create engine with proper connection string
+        engine = sqlalchemy.create_engine(
+            f"postgresql+psycopg2://{conn.login}:{conn.password}@"
+            f"{conn.host}:{conn.port}/{conn.schema}"
+        )
+        
+        # Read CSV and inspect data
+        df = pd.read_csv(file_path)
+        print(f"📊 Dataset shape: {df.shape}")
+        print(f"📋 Columns: {list(df.columns)}")
+        print(f"🔍 First few rows:")
+        print(df.head())
+        
+        # Load to database
+        df.to_sql(name="titanic", con=engine, if_exists="replace", index=False)
+        
+        print(f"✅ Successfully loaded {len(df)} rows to titanic table")
+        return f"Loaded {len(df)} rows successfully"
+        
+    except Exception as e:
+        print(f"❌ Error loading data: {str(e)}")
+        raise
+
+# DAG definition
+with DAG(
+    dag_id="extract_titanic_data",
+    schedule=None,
+    start_date=datetime(2023, 1, 1),
+    catchup=False,
+    tags=['titanic', 'gcs', 'etl'],
+    description="Extract Titanic data from GCS and load to PostgreSQL",
+    max_active_runs=1,
+) as dag:
+    
+    # Step 1: Validate bucket access
+    validate_access = PythonOperator(
+        task_id="validate_bucket_access",
+        python_callable=validate_bucket_access,
+        provide_context=True,
+    )
+    
+    # Step 2: List all files in the bucket
+    list_files = GCSListObjectsOperator(
+        task_id="list_files",
+        bucket="my-bucket-2945",
+        gcp_conn_id="google",
+        delimiter=None,  # List all objects
+        prefix=None,     # No prefix filter
+    )
+    
+    # Step 3: Process and verify file list
+    process_files = PythonOperator(
+        task_id="process_file_list",
+        python_callable=process_file_list,
+        provide_context=True,
+    )
+    
+    # Step 4: Download the specific file
+    download_file = GCSToLocalFilesystemOperator(
+        task_id="download_file",
+        bucket="my-bucket-2945",
+        object_name="Titanic-Dataset.csv",
+        filename="/tmp/Titanic-Dataset.csv",
+        gcp_conn_id="google",
+    )
+    
+    # Step 5: Load data to PostgreSQL
+    load_data = PythonOperator(
+        task_id="load_to_sql",
+        python_callable=load_to_sql,
+        op_kwargs={"file_path": "/tmp/Titanic-Dataset.csv"},
+        provide_context=True,
+    )
+    
+    # Set task dependencies
+    validate_access >> list_files >> process_files >> download_file >> load_data
